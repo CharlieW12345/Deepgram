@@ -11,7 +11,8 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import AffinityPropagation
 from sklearn.exceptions import ConvergenceWarning
 import warnings
-
+from functools import lru_cache
+import multiprocessing
 
 warnings.filterwarnings("ignore", category=ConvergenceWarning)
 
@@ -92,33 +93,49 @@ def extract_keywords(text_corpus, num_keywords):
 # Step 4: Construct knowledge graph
 
 
-def construct_knowledge_graph(keyterms,G=None):
+
+
+
+
+
+
+
+def process_keyterm(kt, mapping_dict):
+    wiki = wikipediaapi.Wikipedia('en')
+    candidate_mappings = {}
+    # Get entity candidates for each keyterm
+    page = wiki.page(kt)
+    if page.exists():
+        for link in page.links:
+            candidate = link.title()
+            if candidate != kt:
+                if candidate in candidate_mappings:
+                    candidate_mappings[candidate] += 1
+                else:
+                    candidate_mappings[candidate] = 1
+        # Calculate prior probability for each candidate entity
+        total_count = sum(candidate_mappings.values())
+        for candidate, count in candidate_mappings.items():
+            prior_prob = count / total_count
+            if candidate in mapping_dict:
+                mapping_dict[candidate][kt] = prior_prob
+            else:
+                mapping_dict[candidate] = {kt: prior_prob}
+
+def construct_knowledge_graph_parallel(keyterms, num_processes=None, G=None):
     if not G:
         G = nx.Graph()
     wiki = wikipediaapi.Wikipedia('en')
 
     # Build a mapping dictionary for keyterms
-    mapping_dict = {}
+    mapping_dict = multiprocessing.Manager().dict()
+    processes = []
     for kt in keyterms:
-        candidate_mappings = {}
-        # Get entity candidates for each keyterm
-        page = wiki.page(kt)
-        if page.exists():
-            for link in page.links:
-                candidate = link.title
-                if candidate != kt:
-                    if candidate in candidate_mappings:
-                        candidate_mappings[candidate] += 1
-                    else:
-                        candidate_mappings[candidate] = 1
-            # Calculate prior probability for each candidate entity
-            total_count = sum(candidate_mappings.values())
-            for candidate, count in candidate_mappings.items():
-                prior_prob = count / total_count
-                if candidate in mapping_dict:
-                    mapping_dict[candidate][kt] = prior_prob
-                else:
-                    mapping_dict[candidate] = {kt: prior_prob}
+        p = multiprocessing.Process(target=process_keyterm, args=(kt, mapping_dict))
+        processes.append(p)
+        p.start()
+    for p in processes:
+        p.join()
 
     # Add nodes to the graph
     for entity in mapping_dict:
@@ -143,6 +160,10 @@ def construct_knowledge_graph(keyterms,G=None):
                 G.add_edge(entity1, entity2, weight=edge_weight)
 
     return G
+
+# So the total time complexity of this part of the function is O(N^2*K). K is the number of keyterms, N is the number of unique entities found across all the keyterms
+
+
     
 
 def cluster_keyphrases(keyphrases):
@@ -161,11 +182,20 @@ def cluster_keyphrases(keyphrases):
 
 
 
+
+if __name__ == '__main__':
+    multiprocessing.freeze_support()
+    text = extract_keywords("transcripts/transcript1/cosmosdb.txt",5)
+    G = construct_knowledge_graph_parallel(text)
+    print(G.nodes)
+
+
+
 # Run the program
-def KG():
-    text = extract_keywords("transcripts/transcript1/cosmosdb.txt",20)
-    G = construct_knowledge_graph(text)
-    # viewKG(G)
+# def KG():
+#     text = extract_keywords("transcripts/transcript1/cosmosdb.txt",20)
+#     G = construct_knowledge_graph_parallel(text)
+#     # viewKG(G)
     # text = initialize("transcripts/transcript2/From Python Script to Python app.txt")
     # G = construct_knowledge_graph(text,G)
     # text = initialize("transcripts/transcript3/Course Work 1 - Part 2.txt")
@@ -213,7 +243,7 @@ def clusters(text_corpus):
 
 # Run functions from here
 
-KG()
+# KG()
 
 # I have to construct knowledge graph in the paper they just use dbpedia
 
@@ -238,4 +268,6 @@ KG()
 # 5. Use a more efficient Wikipedia API client: The current implementation uses the `wikipediaapi` library to query Wikipedia for entity descriptions. There are other Wikipedia API clients, such as `wikipedia` and `mwclient`, that may be faster and more efficient.
 
 # 6. More effecient porgramming language
+
+# 7. Get Ethernet, Use HPC and free up RAM on computer, potentially use VMware
 # These are just a few potential optimizations that can be made to speed up the algorithm. Depending on the specific use case and constraints, there may be other optimizations that are more appropriate.
