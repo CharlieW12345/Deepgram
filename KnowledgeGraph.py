@@ -13,6 +13,9 @@ from sklearn.cluster import AffinityPropagation
 from sklearn.exceptions import ConvergenceWarning
 import warnings
 import multiprocessing
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
 
 warnings.filterwarnings("ignore", category=ConvergenceWarning)
 
@@ -63,38 +66,72 @@ def filter_phrases(text):
 
 
 
-def process_keyterm(kt, mapping_dict):
+
+
+def process_keyterm(kt, mapping_dict, vectorizer):
     site = mwclient.Site('en.wikipedia.org')
     candidate_mappings = {}
+    total_count = 0  # Total occurrence count of keyterm in linked phrases
     # Get entity candidates for each keyterm
     page = site.pages[kt]
     if page.exists:
+        # Add the keyterm as a node in the mapping dictionary
+        if kt not in mapping_dict:
+            mapping_dict[kt] = {}
         for link in page.links():
             candidate = link.page_title
             if candidate != kt:
-                if candidate in candidate_mappings:
-                    candidate_mappings[candidate] += 1
-                else:
-                    candidate_mappings[candidate] = 1
-        # Calculate prior probability for each candidate entity
-        total_count = sum(candidate_mappings.values())
-        for candidate, count in candidate_mappings.items():
+                # Count co-occurrence of candidate entity with keyterm in linked phrases
+                co_occurrence_count = link.text().count(kt)
+                if co_occurrence_count > 0:
+                    total_count += co_occurrence_count
+                    if candidate in candidate_mappings:
+                        candidate_mappings[candidate]['count'] += co_occurrence_count
+                    else:
+                        candidate_mappings[candidate] = {'count': co_occurrence_count, 'prior_prob': 0, 'cos_sim': 0}
+        # Calculate prior probability and cosine similarity for each candidate entity
+        for candidate, values in candidate_mappings.items():
+            count = values['count']
             prior_prob = count / total_count
+            if kt not in mapping_dict:
+                mapping_dict[kt] = {}
+            if candidate not in mapping_dict[kt]:
+                mapping_dict[kt][candidate] = {'prior_prob': prior_prob, 'cos_sim': 0}
             if candidate in mapping_dict:
-                mapping_dict[candidate][kt] = prior_prob
+                if kt not in mapping_dict[candidate]:
+                    mapping_dict[candidate][kt] = {'prior_prob': prior_prob, 'cos_sim': 0}
+                else:
+                    mapping_dict[candidate][kt]['prior_prob'] = prior_prob
             else:
-                mapping_dict[candidate] = {kt: prior_prob}
+                mapping_dict[candidate] = {kt: {'prior_prob': prior_prob}}
 
-def construct_knowledge_graph_parallel(keyterms, num_processes=None, G=None):
+            # Calculate cosine similarity between candidate and keyterm
+            page = site.pages[candidate]
+            if page.exists:
+                text = page.text()
+                vec = vectorizer.fit_transform([str(text)]).toarray()
+                cos_sim = np.dot(vec, vec.transpose())[0][0] / (np.linalg.norm(vec) * np.linalg.norm(vec))
+                if kt in mapping_dict and candidate in mapping_dict[kt]:
+                    mapping_dict[kt][candidate]['cos_sim'] = cos_sim
+                if candidate in mapping_dict and kt in mapping_dict[candidate]:
+                    mapping_dict[candidate][kt]['cos_sim'] = cos_sim
+    return mapping_dict
+
+
+
+
+
+def construct_knowledge_graph_parallel(keyterms, num_processes=None, G=None, doc_text=None):
     if not G:
         G = nx.Graph()
     site = mwclient.Site('en.wikipedia.org')
 
     # Build a mapping dictionary for keyterms
     mapping_dict = multiprocessing.Manager().dict()
+    vectorizer = CountVectorizer()
     processes = []
     for kt in keyterms:
-        p = multiprocessing.Process(target=process_keyterm, args=(kt, mapping_dict))
+        p = multiprocessing.Process(target=process_keyterm, args=(kt, mapping_dict, vectorizer))
         processes.append(p)
         p.start()
     for p in processes:
@@ -118,16 +155,32 @@ def construct_knowledge_graph_parallel(keyterms, num_processes=None, G=None):
         else:
             G.nodes[entity]['description'] = 'No description available.'
         
-    # Add edges to the graph
-    for i, entity1 in enumerate(mapping_dict):
-        for j in range(i+1, len(mapping_dict)):
-            entity2 = list(mapping_dict.keys())[j]
-            edge_weight = 0
-            for kt in mapping_dict[entity1]:
-                if kt in mapping_dict[entity2]:
-                    edge_weight += mapping_dict[entity1][kt] * mapping_dict[entity2][kt]
-            if edge_weight > 0:
-                G.add_edge(entity1, entity2, weight=edge_weight)
+    # Compute document vector
+    doc_vector = vectorizer.fit_transform([str(doc_text)]).toarray()
+
+    # Add edges to the graph with prior probabilities and cosine similarity as edge weight
+    for kt, candidate_mappings in mapping_dict.items():
+        for entity in candidate_mappings:
+            if entity != kt:
+                prior_prob = candidate_mappings[entity]['prior_prob']
+                # Compute cosine similarity between document vector and entity vector
+                entity_vector = vectorizer.fit_transform([str(entity)]).toarray()
+                # Reshape vectors to have the same number of features
+                if entity_vector.shape[1] < doc_vector.shape[1]:
+                    entity_vector = np.pad(entity_vector, ((0, 0), (0, doc_vector.shape[1] - entity_vector.shape[1])), mode='constant')
+                elif entity_vector.shape[1] > doc_vector.shape[1]:
+                    doc_vector = np.pad(doc_vector, ((0, 0), (0, entity_vector.shape[1] - doc_vector.shape[1])), mode='constant')
+                cos_sim = cosine_similarity(doc_vector, entity_vector)[0][0]
+                # Combine prior probability and cosine similarity as edge weight
+                edge_weight = prior_prob * cos_sim
+                if G.has_edge(kt, entity):
+                    # Update edge weight if it already exists
+                    G[kt][entity]['edge_weight'] += edge_weight
+                else:
+                    # Create a new edge if it does not exist
+                    G.add_edge(kt, entity, weight=edge_weight)
+                    G[kt][entity]['prior_prob'] = prior_prob
+                    G[kt][entity]['cos_sim'] = cos_sim
 
     return G
 
@@ -179,10 +232,11 @@ def viewKG(G):
 
     
 
-# if __name__ == '__main__':
-#     multiprocessing.freeze_support()
-#     text = filter_phrases("transcripts/transcript1/cosmosdb.txt")
-#     G = construct_knowledge_graph_parallel(text)
+if __name__ == '__main__':
+    multiprocessing.freeze_support()
+    text = filter_phrases("transcripts/transcript1/cosmosdb.txt")
+    text_corpus = open("transcripts/transcript1/cosmosdb.txt").read()
+    G = construct_knowledge_graph_parallel(text,text_corpus)
 #     text = filter_phrases("transcripts/transcript2/From Python Script to Python app.txt")
 #     G = construct_knowledge_graph_parallel(text,G)
 #     text = filter_phrases("transcripts/transcript3/Course Work 1 - Part 2.txt")
@@ -201,7 +255,7 @@ def viewKG(G):
 #     G = construct_knowledge_graph_parallel(text,G)
 #     text = filter_phrases("transcripts/transcript10/ToolsandTechniques.txt")
 #     G = construct_knowledge_graph_parallel(text,G)
-#     nx.write_graphml(G, "knowledge_graph.graphml")
+    nx.write_graphml(G, "knowledge_graph.graphml1")
 
 
 
@@ -222,6 +276,7 @@ def clusters(text_corpus):
 
 # Define function to construct h-hop keyterm graph
 
+
 def construct_h_hop_keyterm_graph(KG, cluster, h):
     # Initialize graph
     G = nx.Graph()
@@ -241,13 +296,20 @@ def construct_h_hop_keyterm_graph(KG, cluster, h):
                         G.add_node(neighbor)
                     G.add_edge(keyterm, neighbor)
 
-    # Calculate edge weights using shared neighbor weighting
+    # Calculate edge weights using cosine similarity and prior probability
+    mapping_dict = {key: set(KG[key]) for key in KG}
     for u, v in G.edges:
-        shared_neighbors = list(nx.common_neighbors(KG, u, v))
-        weight = sum([1/KG.degree(neighbor) for neighbor in shared_neighbors])
-        G.edges[u, v]['weight'] = weight
+        u_neighbors = mapping_dict.get(u, set())
+        v_neighbors = mapping_dict.get(v, set())
+        shared_neighbors = u_neighbors.intersection(v_neighbors)
+        if len(shared_neighbors) > 0:
+            cos_sim = len(shared_neighbors) / (KG.degree(u) * KG.degree(v)) ** 0.5
+            prior_prob = sum(KG[neighbor].get(u, 0) for neighbor in shared_neighbors) / sum(KG[neighbor] for neighbor in u_neighbors)
+            weight = cos_sim * prior_prob
+            G.edges[u, v]['weight'] = weight
 
     return G
+
 
 
 
@@ -259,7 +321,7 @@ def H_hop():
     for node, attrs in h_hop.nodes(data=True):
         print(node, attrs)
 
-H_hop()
+# H_hop()
 
 def PageRank(G, h, alpha, num_keywords):
     # Construct the h-hop keyterm graph
