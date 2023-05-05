@@ -6,12 +6,12 @@ from nltk.tokenize import word_tokenize
 from collections import defaultdict
 import networkx as nx
 import matplotlib.pyplot as plt
-import wikipediaapi
+import mwclient
+import re
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import AffinityPropagation
 from sklearn.exceptions import ConvergenceWarning
 import warnings
-from functools import lru_cache
 import multiprocessing
 
 warnings.filterwarnings("ignore", category=ConvergenceWarning)
@@ -63,19 +63,6 @@ def filter_phrases(text):
 
 
 
-
-
-
-
-
-
-import mwclient
-
-
-
-
-
-
 def process_keyterm(kt, mapping_dict):
     site = mwclient.Site('en.wikipedia.org')
     candidate_mappings = {}
@@ -119,8 +106,15 @@ def construct_knowledge_graph_parallel(keyterms, num_processes=None, G=None):
         # Get entity description from Wikipedia
         page = site.pages[entity]
         if page.exists:
-            description = extract_summary(page.text())[0:150] + '...' if len(extract_summary(page.text())) > 150 else extract_summary(page.text())
-            G.nodes[entity]['description'] = description
+            if page.redirect:
+                target_title = page.redirects_to().name
+                page = site.pages[target_title]
+                description = extract_summary(page.text())[0:300] + '...' if len(extract_summary(page.text())) > 300 else extract_summary(page.text()) # can experiment with this value
+                G.nodes[entity]['description'] = description
+            else:
+                description = extract_summary(page.text())[0:300] + '...' if len(extract_summary(page.text())) > 300 else extract_summary(page.text()) 
+                G.nodes[entity]['description'] = description
+
         else:
             G.nodes[entity]['description'] = 'No description available.'
         
@@ -140,13 +134,11 @@ def construct_knowledge_graph_parallel(keyterms, num_processes=None, G=None):
 
 
 
-def extract_summary(text, max_sentences=3):
-    # Split text into paragraphs
-    paragraphs = text.split('\n\n')
-    # Select first paragraph as summary
-    summary = paragraphs[0]
-    return summary
-
+def extract_summary(text):
+    expr = re.compile("(?:^|}})([^{{\}}]+)(?:\{{|$)")
+    content =  "".join(expr.findall(text)[0:])
+    expr = re.compile("'''[\s\S]*$")
+    return "".join(expr.findall(content)[0:])
 
 
 
@@ -187,46 +179,40 @@ def viewKG(G):
 
     
 
-if __name__ == '__main__':
-    multiprocessing.freeze_support()
-    text = filter_phrases("transcripts/transcript1/cosmosdb.txt")
-    G = construct_knowledge_graph_parallel(text)
-    nx.write_graphml(G, "knowledge_graph.graphml")
-
-
-
-# Run the program
-# def KG():
-#     text = extract_keywords("transcripts/transcript1/cosmosdb.txt",20)
+# if __name__ == '__main__':
+#     multiprocessing.freeze_support()
+#     text = filter_phrases("transcripts/transcript1/cosmosdb.txt")
 #     G = construct_knowledge_graph_parallel(text)
-#     # viewKG(G)
-    # text = initialize("transcripts/transcript2/From Python Script to Python app.txt")
-    # G = construct_knowledge_graph(text,G)
-    # text = initialize("transcripts/transcript3/Course Work 1 - Part 2.txt")
-    # G = construct_knowledge_graph(text,G)
-    # text = initialize("transcripts/transcript4/Data in the Cloud.txt")
-    # G = construct_knowledge_graph(text,G)
-    # text = initialize("transcripts/transcript5/iaac.txt")
-    # G = construct_knowledge_graph(text,G)
-    # text = initialize("transcripts/transcript6/Starting-PHP.txt")
-    # G = construct_knowledge_graph(text,G)
-    # text = initialize("transcripts/transcript7/WithSecure.txt")
-    # G = construct_knowledge_graph(text,G)
-    # text = initialize("transcripts/transcript8/Vulnerability-Fixing.txt")
-    # G = construct_knowledge_graph(text,G)
-    # text = initialize("transcripts/transcript9/robpress.txt")
-    # G = construct_knowledge_graph(text,G)
-    # text = initialize("transcripts/transcript10/ToolsandTechniques.txt")
-    # G = construct_knowledge_graph(text,G)
-    # nx.write_graphml(G, "knowledge_graph.graphml")
+#     text = filter_phrases("transcripts/transcript2/From Python Script to Python app.txt")
+#     G = construct_knowledge_graph_parallel(text,G)
+#     text = filter_phrases("transcripts/transcript3/Course Work 1 - Part 2.txt")
+#     G = construct_knowledge_graph_parallel(text,G)
+#     text = filter_phrases("transcripts/transcript4/Data in the Cloud.txt")
+#     G = construct_knowledge_graph_parallel(text,G)
+#     text = filter_phrases("transcripts/transcript5/iaac.txt")
+#     G = construct_knowledge_graph_parallel(text,G)
+#     text = filter_phrases("transcripts/transcript6/Starting-PHP.txt")
+#     G = construct_knowledge_graph_parallel(text,G)
+#     text = filter_phrases("transcripts/transcript7/WithSecure.txt")
+#     G = construct_knowledge_graph_parallel(text,G)
+#     text = filter_phrases("transcripts/transcript8/Vulnerability-Fixing.txt")
+#     G = construct_knowledge_graph_parallel(text,G)
+#     text = filter_phrases("transcripts/transcript9/robpress.txt")
+#     G = construct_knowledge_graph_parallel(text,G)
+#     text = filter_phrases("transcripts/transcript10/ToolsandTechniques.txt")
+#     G = construct_knowledge_graph_parallel(text,G)
+#     nx.write_graphml(G, "knowledge_graph.graphml")
+
+
+
+
 
 
 
 # Knowledge graph is constructed from all transcripts and then saved as graphml
 
 def clusters(text_corpus):
-    text = open(text_corpus).read()
-    keyphrases = filter_phrases(text)
+    keyphrases = filter_phrases(text_corpus)
     clusters = cluster_keyphrases(keyphrases)
     # print(dict(collections.OrderedDict(sorted(clusters.items()))))
     return clusters
@@ -234,10 +220,121 @@ def clusters(text_corpus):
 
 # Run functions from here
 
-# KG()
+# Define function to construct h-hop keyterm graph
+
+def construct_h_hop_keyterm_graph(KG, cluster, h):
+    # Initialize graph
+    G = nx.Graph()
+    KG = nx.from_dict_of_lists(KG)
+    # Add keyterms as nodes to the graph
+    for keyterm in cluster:
+        if keyterm in KG:
+            G.add_node(keyterm)
+
+    # Add h-hop neighbors to the graph
+    for i in range(h):
+        for keyterm in G.nodes:
+            if keyterm in KG:
+                neighbors = KG.neighbors(keyterm)
+                for neighbor in neighbors:
+                    if neighbor not in G.nodes and neighbor in KG:
+                        G.add_node(neighbor)
+                    G.add_edge(keyterm, neighbor)
+
+    # Calculate edge weights using shared neighbor weighting
+    for u, v in G.edges:
+        shared_neighbors = list(nx.common_neighbors(KG, u, v))
+        weight = sum([1/KG.degree(neighbor) for neighbor in shared_neighbors])
+        G.edges[u, v]['weight'] = weight
+
+    return G
+
+
+
+def H_hop():
+    cluster = clusters("transcripts/transcript1/cosmosdb.txt")
+    print(cluster)
+    KG = nx.read_graphml("knowledge_graph.graphml")
+    h_hop = construct_h_hop_keyterm_graph(cluster, KG, 2)
+    for node, attrs in h_hop.nodes(data=True):
+        print(node, attrs)
+
+H_hop()
+
+def PageRank(G, h, alpha, num_keywords):
+    # Construct the h-hop keyterm graph
+    keyterms = []
+    for node in G.nodes():
+        if 'keyterm' in G.nodes[node] and G.nodes[node]['keyterm']:
+            keyterms.append(node)
+    h_hop_graph = construct_h_hop_keyterm_graph(G, h, keyterms)
+    
+    # Compute personalized PageRank
+    node_weights = dict.fromkeys(h_hop_graph.nodes(), 0)
+    for keyterm in keyterms:
+        node_weights[keyterm] = 1
+    node_weights = nx.pagerank(h_hop_graph, alpha=alpha, personalization=node_weights, max_iter=100)
+
+    # Rank nodes by weight and return the top num_keywords
+    ranked_nodes = sorted(node_weights.items(), key=lambda x: x[1], reverse=True)[:num_keywords]
+    keywords = [node for node, weight in ranked_nodes]
+
+    return keywords
+
+def extract_candidate_phrases(processed):
+    
+    # Extract noun phrases using part-of-speech tagging
+    grammar = r"""
+        NP: {<DT|PP\$>?<JJ>*<NN>+}
+            {<NNP>+}
+            """
+    cp = nltk.RegexpParser(grammar)
+    tagged_tokens = nltk.pos_tag(processed)
+    tree = cp.parse(tagged_tokens)
+    
+    # Get candidate phrases from the parse tree
+    candidate_phrases = []
+    for subtree in tree.subtrees():
+        if subtree.label() == 'NP':
+            candidate_phrases.append(' '.join([word for word, tag in subtree.leaves()]))
+    
+    return candidate_phrases
+
+def filter_phrases(phrases):
+    # Filter phrases that occur more than once and have at least two words
+    phrase_freq = defaultdict(int)
+    for phrase in phrases:
+        phrase_freq[phrase] += 1
+    filtered_phrases = [phrase for phrase in phrases if phrase_freq[phrase] > 1 and len(phrase.split()) > 1]
+    return filtered_phrases
+
+#The value of K is determined empirically by evaluating the performance of the keyphrase extraction algorithm on a development set. Perhaps change this so it can have multiple words aswell
+def extract_keywords(keyphrases, num_keywords):
+    # Extract candidate phrases
+    candidate_phrases = extract_candidate_phrases(keyphrases)
+    
+    # Filter candidate phrases
+    filtered_phrases = filter_phrases(candidate_phrases)
+    
+    # Rank candidate phrases by personalized PageRank scores
+    ranked_phrases = []
+    for phrase in filtered_phrases:
+        if phrase in keyphrases:
+            score = keyphrases[phrase]
+        else:
+            score = 0.0
+        ranked_phrases.append((phrase, score))
+    ranked_phrases.sort(key=lambda x: x[1], reverse=True)
+
+    # Select top K phrases
+    selected_phrases = [phrase[0] for phrase in ranked_phrases[:num_keywords]]
+
+    return selected_phrases
+
 
 # I have to construct knowledge graph in the paper they just use dbpedia
 
+# Do final checks to make sure this flow is right and performs as the one proposed in the paper, and also comment the code so that it makes sense with potential time complexity
 # Flow = have a universal keyword selection mechanism this can be changed as wanted, and how I used one specified in paper (need to check)
 # Constuct clusters of these keywords
 # Construct a KG from these keywords using semantics relatedness
@@ -263,4 +360,6 @@ def clusters(text_corpus):
 # 7. Get Ethernet, Use HPC and free up RAM on computer, potentially use VMware
 
 # 8. Allcating more resources in python
+
+# 9. DBpedia was too slow, but worth looking into for the more enhanced results, perhaps the way they construct in the paper is with a lot less nodes like my original KG so need to look into thi 
 # These are just a few potential optimizations that can be made to speed up the algorithm. Depending on the specific use case and constraints, there may be other optimizations that are more appropriate.
