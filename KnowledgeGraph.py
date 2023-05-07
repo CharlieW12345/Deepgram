@@ -64,9 +64,10 @@ def filter_phrases(text):
 
 # Step 4: Construct knowledge graph
 
+# not all the mapping are stored
+# not all the keyterms are nodes with probs
 
-
-
+import time
 
 def process_keyterm(kt, mapping_dict, vectorizer):
     site = mwclient.Site('en.wikipedia.org')
@@ -78,17 +79,24 @@ def process_keyterm(kt, mapping_dict, vectorizer):
         # Add the keyterm as a node in the mapping dictionary
         if kt not in mapping_dict:
             mapping_dict[kt] = {}
+        count = 0
         for link in page.links():
-            candidate = link.page_title
-            if candidate != kt:
-                # Count co-occurrence of candidate entity with keyterm in linked phrases
-                co_occurrence_count = link.text().count(kt)
-                if co_occurrence_count > 0:
-                    total_count += co_occurrence_count
-                    if candidate in candidate_mappings:
-                        candidate_mappings[candidate]['count'] += co_occurrence_count
-                    else:
-                        candidate_mappings[candidate] = {'count': co_occurrence_count, 'prior_prob': 0, 'cos_sim': 0}
+            if count < 50: # Limited to 50 as KG becomes too big , study could be done into the optimum also they are chosen randomly and obviously this is not ideal 
+                count = count + 1
+                candidate = link.page_title
+                if candidate != kt:
+                    # Count co-occurrence of candidate entity with keyterm in linked phrases
+                    co_occurrence_count = link.text().count(kt)
+                    if co_occurrence_count > 0:
+                        total_count += co_occurrence_count
+                        if candidate in candidate_mappings:
+                            candidate_mappings[candidate]['count'] += co_occurrence_count
+                        else:
+                            candidate_mappings[candidate] = {'count': co_occurrence_count, 'prior_prob': 0, 'cos_sim': 0}
+            else:
+                break
+            time.sleep(1.5)  # Add a delay of 2 seconds between requests
+        print("direct")
         # Calculate prior probability and cosine similarity for each candidate entity
         for candidate, values in candidate_mappings.items():
             count = values['count']
@@ -115,7 +123,64 @@ def process_keyterm(kt, mapping_dict, vectorizer):
                     mapping_dict[kt][candidate]['cos_sim'] = cos_sim
                 if candidate in mapping_dict and kt in mapping_dict[candidate]:
                     mapping_dict[candidate][kt]['cos_sim'] = cos_sim
+                time.sleep(1.5)  # Add a delay of 2 seconds between requests
+            
+
+    else:
+        # Add the keyterm as a node in the mapping dictionary
+        if kt not in mapping_dict:
+            mapping_dict[kt] = {}
+        count = 0
+        for link in site.search(kt):
+            if count < 50:
+                count = count + 1
+                candidate = link.get('title')
+                if candidate != kt:
+                    link = site.pages[candidate]
+                    # Count co-occurrence of candidate entity with keyterm in linked phrases
+                    co_occurrence_count = link.text().count(kt)
+                    if co_occurrence_count > 0:
+                        total_count += co_occurrence_count
+                        if candidate in candidate_mappings:
+                            candidate_mappings[candidate]['count'] += co_occurrence_count
+                        else:
+                            candidate_mappings[candidate] = {'count': co_occurrence_count, 'prior_prob': 0, 'cos_sim': 0}
+            else:
+                break
+            time.sleep(1.5)  # Add a delay of 2 seconds between requests
+        print("undirect")
+        # Calculate prior probability and cosine similarity for each candidate entity
+        for candidate, values in candidate_mappings.items():
+            count = values['count']
+            prior_prob = count / total_count
+            if kt not in mapping_dict:
+                mapping_dict[kt] = {}
+            if candidate not in mapping_dict[kt]:
+                mapping_dict[kt][candidate] = {'prior_prob': prior_prob, 'cos_sim': 0}
+            if candidate in mapping_dict:
+                if kt not in mapping_dict[candidate]:
+                    mapping_dict[candidate][kt] = {'prior_prob': prior_prob, 'cos_sim': 0}
+                else:
+                    mapping_dict[candidate][kt]['prior_prob'] = prior_prob
+            else:
+                mapping_dict[candidate] = {kt: {'prior_prob': prior_prob}}
+
+            # Calculate cosine similarity between candidate and keyterm
+            page = site.pages[candidate]
+            if page.exists:
+                text = page.text()
+                vec = vectorizer.fit_transform([str(text)]).toarray()
+                cos_sim = np.dot(vec, vec.transpose())[0][0] / (np.linalg.norm(vec) * np.linalg.norm(vec))
+                if kt in mapping_dict and candidate in mapping_dict[kt]:
+                    mapping_dict[kt][candidate]['cos_sim'] = cos_sim
+                if candidate in mapping_dict and kt in mapping_dict[candidate]:
+                    mapping_dict[candidate][kt]['cos_sim'] = cos_sim
+                time.sleep(1.5)  # Add a delay of 2 seconds between requests
+        
     return mapping_dict
+
+
+   
 
 
 
@@ -139,21 +204,31 @@ def construct_knowledge_graph_parallel(keyterms, num_processes=None, G=None, doc
 
     # Add nodes to the graph
     for entity in mapping_dict:
+        print("loop")
         G.add_node(entity)
-        # Get entity description from Wikipedia
+        # Get entity description from Wikipedia, this sections isn't really needed but helps for human interpretation as probabilites have already been calculated
         page = site.pages[entity]
         if page.exists:
             if page.redirect:
                 target_title = page.redirects_to().name
                 page = site.pages[target_title]
                 description = extract_summary(page.text())[0:300] + '...' if len(extract_summary(page.text())) > 300 else extract_summary(page.text()) # can experiment with this value
-                G.nodes[entity]['description'] = description
+                G.nodes[entity]['description'] = "This is not the direct entity description as it was redirected to " + target_title + ": " +  description
             else:
                 description = extract_summary(page.text())[0:300] + '...' if len(extract_summary(page.text())) > 300 else extract_summary(page.text()) 
                 G.nodes[entity]['description'] = description
 
         else:
-            G.nodes[entity]['description'] = 'No description available.'
+            count = 0
+            for result in site.search(entity):
+                if count < 1:
+                    count = count + 1
+                    search_page = result.get('title')
+                else:
+                    break
+            page = site.pages[search_page]
+            description = extract_summary(page.text())[0:300] + '...' if len(extract_summary(page.text())) > 300 else extract_summary(page.text()) 
+            G.nodes[entity]['description'] = "The description of this exact entity was not found but this a search result that is similar: " + description
         
     # Compute document vector
     doc_vector = vectorizer.fit_transform([str(doc_text)]).toarray()
@@ -181,7 +256,10 @@ def construct_knowledge_graph_parallel(keyterms, num_processes=None, G=None, doc
                     G.add_edge(kt, entity, weight=edge_weight)
                     G[kt][entity]['prior_prob'] = prior_prob
                     G[kt][entity]['cos_sim'] = cos_sim
-
+    # Add nodes to the graph for any keyterms that were not linked to any entities
+    for kt in keyterms:
+        if kt not in G:
+            G.add_node(kt)
     return G
 
 
@@ -235,6 +313,7 @@ def viewKG(G):
 if __name__ == '__main__':
     multiprocessing.freeze_support()
     text = filter_phrases("transcripts/transcript1/cosmosdb.txt")
+    print(text)
     text_corpus = open("transcripts/transcript1/cosmosdb.txt").read()
     G = construct_knowledge_graph_parallel(text,text_corpus)
 #     text = filter_phrases("transcripts/transcript2/From Python Script to Python app.txt")
@@ -255,7 +334,7 @@ if __name__ == '__main__':
 #     G = construct_knowledge_graph_parallel(text,G)
 #     text = filter_phrases("transcripts/transcript10/ToolsandTechniques.txt")
 #     G = construct_knowledge_graph_parallel(text,G)
-    nx.write_graphml(G, "knowledge_graph.graphml1")
+    nx.write_graphml(G, "knowledge_graph.graphml2")
 
 
 
@@ -423,5 +502,7 @@ def extract_keywords(keyphrases, num_keywords):
 
 # 8. Allcating more resources in python
 
-# 9. DBpedia was too slow, but worth looking into for the more enhanced results, perhaps the way they construct in the paper is with a lot less nodes like my original KG so need to look into thi 
+# Only need to combine KGs if they are very simialr as the main issue with this study is the KGs are not big enough
+
+# 9. DBpedia was too slow and also need too specific of a query, but worth looking into for the more enhanced results, perhaps the way they construct in the paper is with a lot less nodes like my original KG so need to look into thi 
 # These are just a few potential optimizations that can be made to speed up the algorithm. Depending on the specific use case and constraints, there may be other optimizations that are more appropriate.
