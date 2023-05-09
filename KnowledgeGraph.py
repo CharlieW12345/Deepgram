@@ -48,7 +48,9 @@ def preprocess(text):
 
 # Step 2: Select Keyterms
 
+
 def extract_keyterms(tokens):
+    # extracts all the nouns that are not stop words from the input tokens and returns them as a list of keyterms
     tagged_tokens = nltk.pos_tag(tokens)
     keyterms = []
     for token, tag in tagged_tokens:
@@ -60,16 +62,16 @@ def filter_keyterms(text):
     text = open(text).read()
     tokens = preprocess(text)
     keyterms = extract_keyterms(tokens)
-    # Filter keyterms that occur more than once
+    # Filter keyterms that occur more than five times
     keyterm_freq = defaultdict(int)
     for keyterm in keyterms:
         keyterm_freq[keyterm] += 1
-    filtered_keyterms = [keyterm for keyterm in keyterms if keyterm_freq[keyterm] > 5]
+    filtered_keyterms = [keyterm for keyterm in keyterms if keyterm_freq[keyterm] > 5] # hyperparameter
     filtered_keyterms = list(set(filtered_keyterms))
     return filtered_keyterms
 
 
-# Step 3: Keyterm Clustering
+# Step 3: Keyterm Clustering (Using affinity propagation)
 
 def compute_semantic( model, term1, term2):
     # Compute cosine similarity between the vector representations of term1 and term2
@@ -94,8 +96,8 @@ def cluster_keyterms(keyterms,input_doc):
         sentences.append(words)
 
     # Train a Word2Vec model on the sentences
-    model = Word2Vec(sentences, vector_size=300, window=5, min_count=1, workers=4)
-    # print(model.wv.key_to_index)
+    model = Word2Vec(sentences, vector_size=300, window=5, min_count=1, workers=4) # Hyper_parameters
+   
     # Compute semantic relatedness between all pairs of keyphrases
     n = len(keyterms)
     similarities = np.zeros((n, n))
@@ -115,8 +117,8 @@ def cluster_keyterms(keyterms,input_doc):
     clusters = dict(collections.OrderedDict(sorted(clusters.items())))
     return clusters
 
-#Function below can just be but in main
 def clusters(text_corpus):
+    # Helper function
     keyterms = filter_keyterms(text_corpus)
     text = open(text_corpus).read()
     clusters = cluster_keyterms(keyterms,text)
@@ -126,11 +128,12 @@ def clusters(text_corpus):
 
 # Step 4: Keyterm Linking (Construct knowledge graph)
 
-def process_keyterm(kt, mapping_dict):
+def process_keyterm(kt, mapping_dict, KG_size=50):
+    # Method to calculate Prior probabilties for each key-term and it's mappings
     site = mwclient.Site('en.wikipedia.org')
     vectorizers = {}
     candidate_mappings = {}
-    total_count = 0  # Total occurrence count of keyterm in linked phrases
+    total_count = 0  # Total occurrence count of keyterm in linked candidate phrases
     # Get entity candidates for each keyterm
     page = site.pages[kt]
     if page.exists:
@@ -139,7 +142,7 @@ def process_keyterm(kt, mapping_dict):
             mapping_dict[kt] = {}
         count = 0
         for link in page.links():
-            if count < 50: # Limited to 50 as KG becomes too big , study could be done into the optimum also they are chosen randomly and obviously this is not ideal 
+            if count < KG_size: # Limited to 50 as KG becomes too big
                 count = count + 1
                 candidate = link.page_title
                 if candidate != kt:
@@ -153,7 +156,7 @@ def process_keyterm(kt, mapping_dict):
                             candidate_mappings[candidate] = {'count': co_occurrence_count, 'prior_prob': 0, 'cos_sim': 0}
             else:
                 break
-            time.sleep(1.5)  # Add a delay of 2 seconds between requests
+            time.sleep(1.5)  # Add a delay of 1.5 seconds between requests, this stops the mwclient from making too many requests and creating an error
         print("direct")
         # Calculate prior probability and cosine similarity for each candidate entity
         for candidate, values in candidate_mappings.items():
@@ -175,14 +178,14 @@ def process_keyterm(kt, mapping_dict):
                 mapping_dict[candidate] = {kt: {'prior_prob': prior_prob}}
 
                 
-
+        #Repeated for terms that don't have a direct wikipedia page
     else:
         # Add the keyterm as a node in the mapping dictionary
         if kt not in mapping_dict:
             mapping_dict[kt] = {}
         count = 0
         for link in site.search(kt):
-            if count < 50:
+            if count < KG_size:
                 count = count + 1
                 candidate = link.get('title')
                 if candidate != kt:
@@ -197,7 +200,7 @@ def process_keyterm(kt, mapping_dict):
                             candidate_mappings[candidate] = {'count': co_occurrence_count, 'prior_prob': 0, 'cos_sim': 0}
             else:
                 break
-            time.sleep(1.5)  # Add a delay of 2 seconds between requests
+            time.sleep(1.5) 
         print("undirect")
         # Calculate prior probability and cosine similarity for each candidate entity
         for candidate, values in candidate_mappings.items():
@@ -223,11 +226,13 @@ def process_keyterm(kt, mapping_dict):
 
 
 def construct_knowledge_graph_parallel(keyterms, num_processes=None, G=None, doc_text=None):
+    # Process to build KG , add descriptions to the keyterm nodes and then compute the cosine similarities of the keyterm nodes
     if not G:
         G = nx.Graph()
     site = mwclient.Site('en.wikipedia.org')
 
     # Build a mapping dictionary for keyterms
+    # Uses parralelization to speed process up 
     mapping_dict = multiprocessing.Manager().dict()
     vectorizer = CountVectorizer()
     processes = []
@@ -242,23 +247,26 @@ def construct_knowledge_graph_parallel(keyterms, num_processes=None, G=None, doc
     for entity in mapping_dict:
         print("loop")
         G.add_node(entity)
-        # Get entity description from Wikipedia, this sections isn't really needed but helps for human interpretation as probabilites have already been calculated
+        # Get entity description from Wikipedia, this section isn't really needed but helps for human interpretation as probabilites have already been calculated. The descriptions of the keyterms
+        # are never actually used it is only the descriptions of the mapping entities used to calculate prior probabilities
         page = site.pages[entity]
         if page.exists:
+            # If the page leads to a redirect this redirects it to that page
             if page.redirect:
                 target_title = page.redirects_to().name
                 page = site.pages[target_title]
-                description = extract_summary(page.text())[0:300] + '...' if len(extract_summary(page.text())) > 300 else extract_summary(page.text()) # can experiment with this value
+                description = extract_summary(page.text())[0:300] + '...' if len(extract_summary(page.text())) > 300 else extract_summary(page.text()) # This value can be changed depending on how log you want description to be
                 G.nodes[entity]['description'] = "This is not the direct entity description as it was redirected to " + target_title + ": " +  description
             else:
-                description = extract_summary(page.text())[0:300] + '...' if len(extract_summary(page.text())) > 300 else extract_summary(page.text()) 
+                # This fetches the description of the direct wikipedia page
+                description = extract_summary(page.text())[0:300] + '...' if len(extract_summary(page.text())) > 300 else extract_summary(page.text()) # Hyper parameter
                 G.nodes[entity]['description'] = description
-
+        # If page doesn't exist redirects to the nearest search result description
         else:
             count = 0
             for result in site.search(entity):
                 if count < 1:
-                    count = count + 1
+                    count = count + 1 
                     search_page = result.get('title')
                 else:
                     break
@@ -286,7 +294,6 @@ def construct_knowledge_graph_parallel(keyterms, num_processes=None, G=None, doc
                 elif entity_vector.shape[1] > doc_vector.shape[1]:
                     doc_vector = np.pad(doc_vector, ((0, 0), (0, entity_vector.shape[1] - doc_vector.shape[1])), mode='constant')
                 doc_entity_cos_sim = cosine_similarity(doc_vector, entity_vector)[0][0]
-                print(doc_entity_cos_sim)
                 # Combine prior probability and cosine similarity as edge weight
                 edge_weight = prior_prob * doc_entity_cos_sim
                 if G.has_edge(kt, entity):
@@ -302,14 +309,20 @@ def construct_knowledge_graph_parallel(keyterms, num_processes=None, G=None, doc
 
 
 def extract_summary(text):
+    # This function cleans the wikipedia page description so that it gives useful summary data
+    # Gets all text after any {{}} that appear
     expr = re.compile("(?:^|}})([^{{\}}]+)(?:\{{|$)")
     content =  "".join(expr.findall(text)[0:])
+    # Gets all text after any ''' that appear
     expr = re.compile("'''[\s\S]*$")
     return "".join(expr.findall(content)[0:])
 
 
 
-# So the total time complexity of this part of the function is O(N^2*K). K is the number of keyterms, N is the number of unique entities found across all the keyterms
+# total time complexity of this stage is :  O(N^2*K). K is the number of keyterms, N is the number of unique entities found across all the keyterms
+
+
+# Function to visualize the KG's produced
 
 def viewKG(G):
     G = nx.read_graphml("knowledge_graph.graphml")
@@ -329,7 +342,6 @@ def viewKG(G):
 # Step 5: Keyterm Graph Construction (Building of H-hop graph)
 
 
-#This initiates 
 def build_h_hop(cluster, kg, h, threshold,input_doc):
     # Initialize the keyterm graph
     keyterm_graph = nx.Graph()
@@ -349,8 +361,8 @@ def build_h_hop(cluster, kg, h, threshold,input_doc):
         count1 = count1 + 1
 
         print(anchor_node + " : " + str(count1) + " : " + str(len(anchor_nodes)))
-        bfs_paths = nx.bfs_tree(kg, anchor_node, depth_limit=h).edges()
-        print(len(bfs_paths))
+        bfs_paths = nx.bfs_tree(kg, anchor_node, depth_limit=h).edges() # This step is only really necessary if the candidate nodes were expanded aswell, which is not done in the paper, this would be very computationally expensive but potentially yield good results
+        print(len(bfs_paths)) # depth_limit is a hyper parameter
         count = 0
         
         # Remove paths that are less related with anchor nodes
@@ -361,12 +373,9 @@ def build_h_hop(cluster, kg, h, threshold,input_doc):
         
         for i, path in enumerate(bfs_paths):
             count = count + 1
-            print("path" + " : " + str(count) )
-            print(path)
-            if semantic_relatedness[i] > threshold: #This value needs to be changed
+            if semantic_relatedness[i] < threshold: # Includes paths above semantic threshold, hyper parameter
                 continue
             
-            print("continue")
             keyterm_graph.add_edges_from([path])
 
     # Add edges between anchor nodes that occur in the same window
@@ -394,8 +403,8 @@ def compute_semantic_relatedness(anchor_nodes, expanded_nodes, input_doc):
         tagged_doc = TaggedDocument(words=phrase.split(), tags=[i])
         tagged_docs.append(tagged_doc)
     
-    # Train a Doc2Vec model on the tagged documents
-    model = Doc2Vec(tagged_docs, vector_size=300, window=3, min_count=1, epochs=50)
+    # Train a Doc2Vec model on the tagged documents, doc2vec was used instead of word2vec so that the infer_vector function can be used, and doc2vec is more powerful generally for this type of task
+    model = Doc2Vec(tagged_docs, vector_size=300, window=3, min_count=1, epochs=50) # Hyper parameters
 
     # Find the vectors for the anchor nodes and expanded nodes
     anchor_vectors = []
@@ -418,7 +427,7 @@ def compute_semantic_relatedness(anchor_nodes, expanded_nodes, input_doc):
 
 def build_keyterm_graph(cluster, window_size, input_doc):
     """
-    Build a keyterm graph for a cluster of terms.
+    Builds a keyterm graph for a cluster of terms.
     
     Args:
     - cluster (dict): a dictionary where the keys are the anchor nodes in the cluster and the values are the corresponding keyterms
@@ -476,6 +485,7 @@ def are_in_same_window(keyterm1, keyterm2, input_doc, window_size):
     
     return False
 
+# The time complexity of this step is : O(N * (|E| * |V|)^h), where N is the number of anchor nodes, |E| is the number of edges in the knowledge graph, |V| is the number of vertices in the knowledge graph, and h is the length of the path.
 
 
 
@@ -543,19 +553,15 @@ def personalized_page_rank(h_hop_graph, keyterms, damping_factor=0.85, max_iter=
 def extract_keyphrases(ppr_scores, input_document, k):
     # Generate candidate phrases
     sentences = sent_tokenize(input_document)
-    print(" ".join(sentences).strip("\n\n"))
     # Tokenize the words and tag their parts of speech
     document = []
     for sentence in sentences:
         tagged = pos_tag(word_tokenize(sentence))
-        # print(document)
         document.append(tagged)
     
     candidates = []
     for sentence in document:
-        # print(sentence)
         for i, (word, pos) in enumerate(sentence):
-            # print(word)
             if pos in ['NN', 'NNS', 'NNP', 'NNPS']:
                 candidate = [word]
                 for j in range(i+1, len(sentence)):
@@ -590,53 +596,20 @@ def extract_keyphrases(ppr_scores, input_document, k):
 
 # Step 9: Pipeline
 
-# if __name__ == '__main__':
-#     multiprocessing.freeze_support()
-#     text = filter_keyterms("transcripts/transcript1/cosmosdb.txt")
-#     print(text)
-#     text_corpus = open("transcripts/transcript1/cosmosdb.txt").read()
-#     G = construct_knowledge_graph_parallel(text,doc_text=text_corpus)
-# #     # text = filter_phrases("transcripts/transcript2/From Python Script to Python app.txt")
-# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-# #     # text = filter_phrases("transcripts/transcript3/Course Work 1 - Part 2.txt")
-# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-# #     # text = filter_phrases("transcripts/transcript4/Data in the Cloud.txt")
-# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-# #     # text = filter_phrases("transcripts/transcript5/iaac.txt")
-# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-# #     # text = filter_phrases("transcripts/transcript6/Starting-PHP.txt")
-# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-# #     # text = filter_phrases("transcripts/transcript7/WithSecure.txt")
-# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-# #     # text = filter_phrases("transcripts/transcript8/Vulnerability-Fixing.txt")
-# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-# #     # text = filter_phrases("transcripts/transcript9/robpress.txt")
-# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-# #     # text = filter_phrases("transcripts/transcript10/ToolsandTechniques.txt")
-# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-#     nx.write_graphml(G, "knowledge_graph.graphml")
 
+# Helper function
 
+def keyphraseExtraction(source,kg_name): 
+    cluster = clusters(source)
+    input_doc = open(source).read()
+    KG = nx.read_graphml( kg_name + ".graphml")
+    h_hop = build_h_hop(cluster, KG,2,0.5, input_doc)
+    nx.write_graphml(h_hop, kg_name + "_h_hop.graphml")
 
-
-
-
-# if __name__ == '__main__':
-#     multiprocessing.freeze_support()
-#     cluster = clusters("transcripts/transcript1/cosmosdb.txt")
-#     print(cluster)
-#     input_doc = open("transcripts/transcript1/cosmosdb.txt").read()
-#     KG = nx.read_graphml("knowledge_graph.graphml")
-#     h_hop = build_h_hop(cluster, KG,2,0.5, input_doc)
-#     nx.write_graphml(h_hop,"h_hop.graphml")
-
-
-if __name__ == '__main__':
-    h_hop = nx.read_graphml("h_hop.graphml")
-    input_doc = open("transcripts/transcript1/cosmosdb.txt").read()
+    input_doc = open(source).read()
     words = nltk.word_tokenize(input_doc)
 
-    # Remove stop words and stem the remaining words.
+    # Remove stop words 
     stopwords = set(nltk.corpus.stopwords.words("english"))
     terms = [word.lower() for word in words if word.lower() not in stopwords]
 
@@ -648,50 +621,123 @@ if __name__ == '__main__':
     ppr_scores = personalized_page_rank(h_hop,keyterms)
     
 
-# Tokenize the words and tag their parts of speech
+    # Tokenize the words and tag their parts of speech
     text = input_doc.lower()
     # Remove punctuation
     text = text.translate(str.maketrans('', '', string.punctuation))
-
-    print(extract_keyphrases(ppr_scores,text,10))
-
-
-
-
+    keyphrases = extract_keyphrases(ppr_scores,text,20)
+    with open(kg_name + ".txt","w") as f:
+          f.write(str(keyphrases))
+    
 
 
 
-#Add parralization and fix the big KG example 
-# I have to construct knowledge graph in the paper they just use dbpedia
-# Need to make sure my keywords are being chosen correct at the start as I don't know if the paper has multiple keywords, have to use doc2vec instead because of this
-# Do final checks to make sure this flow is right and performs as the one proposed in the paper, and also comment the code so that it makes sense with potential time complexity
-# Flow = have a universal keyword selection mechanism this can be changed as wanted, and how I used one specified in paper (need to check)
-# Constuct clusters of these keywords
-# Construct a KG from these keywords using semantics relatedness
-# Construct a H hop keyterm graph from the KG and the clustering of keyterms
-# Use pagerank to go throught the H hop and finalize the keywords
 
-#Something I overcame was how long it took to run need to show what I did
+if __name__ == '__main__':
+    multiprocessing.freeze_support()
+    text = filter_keyterms("transcripts/transcript1/cosmosdb.txt")
+    text_corpus = open("transcripts/transcript1/cosmosdb.txt").read()
+    G = construct_knowledge_graph_parallel(text,doc_text=text_corpus)
+    nx.write_graphml(G, "cosmosDB.graphml")
+    keyphraseExtraction("transcripts/transcript1/cosmosdb.txt","cosmosDB")
+
+    text = filter_keyterms("transcripts/transcript2/From Python Script to Python app.txt")
+    text_corpus = open("transcripts/transcript2/From Python Script to Python app.txt").read()
+    G = construct_knowledge_graph_parallel(text, doc_text=text_corpus)
+    nx.write_graphml(G, "pythonScript.graphml")
+    keyphraseExtraction("transcripts/transcript2/From Python Script to Python app.txt","pythonScript")
+
+    text = filter_keyterms("transcripts/transcript3/Course Work 1 - Part 2.txt")
+    text_corpus = open("transcripts/transcript3/Course Work 1 - Part 2.txt").read()
+    G = construct_knowledge_graph_parallel(text, doc_text=text_corpus)
+    nx.write_graphml(G, "Coursework.graphml")
+    keyphraseExtraction("transcripts/transcript3/Course Work 1 - Part 2.txt","Coursework")
+
+    text = filter_keyterms("transcripts/transcript4/Data in the Cloud.txt")
+    text_corpus = open("transcripts/transcript4/Data in the Cloud.txt").read()
+    G = construct_knowledge_graph_parallel(text, doc_text=text_corpus)
+    nx.write_graphml(G, "DataInCloud.graphml")
+    keyphraseExtraction("transcripts/transcript4/Data in the Cloud.txt","DataInCloud")
+
+    text = filter_keyterms("transcripts/transcript5/iaac.txt")
+    text_corpus = open("transcripts/transcript5/iaac.txt").read()
+    G = construct_knowledge_graph_parallel(text, doc_text=text_corpus)
+    nx.write_graphml(G, "IaaC.graphml")
+    keyphraseExtraction("transcripts/transcript5/iaac.txt","IaaC")
+
+    text = filter_keyterms("transcripts/transcript6/Starting-PHP.txt")
+    text_corpus = open("transcripts/transcript6/Starting-PHP.txt").read()
+    G = construct_knowledge_graph_parallel(text, doc_text=text_corpus)
+    nx.write_graphml(G, "startingPHP.graphml")
+    keyphraseExtraction("transcripts/transcript6/Starting-PHP.txt","startingPHP")
+
+    text = filter_keyterms("transcripts/transcript7/WithSecure.txt")
+    text_corpus = open("transcripts/transcript7/WithSecure.txt").read()
+    G = construct_knowledge_graph_parallel(text, doc_text=text_corpus)
+    nx.write_graphml(G, "WithSecure.graphml")
+    keyphraseExtraction("transcripts/transcript7/WithSecure.txt","WithSecure")
+
+    text = filter_keyterms("transcripts/transcript8/Vulnerability-Fixing.txt")
+    text_corpus = open("transcripts/transcript8/Vulnerability-Fixing.txt").read()
+    G = construct_knowledge_graph_parallel(text, doc_text=text_corpus)
+    nx.write_graphml(G, "VulnFix.graphml")
+    keyphraseExtraction("transcripts/transcript8/Vulnerability-Fixing.txt","VulnFix")
+
+    text = filter_keyterms("transcripts/transcript9/robpress.txt")
+    text_corpus = open("transcripts/transcript9/robpress.txt").read()
+    G = construct_knowledge_graph_parallel(text, doc_text=text_corpus)
+    nx.write_graphml(G, "Robpress.graphml")
+    keyphraseExtraction("transcripts/transcript9/robpress.txt","Robpress")
+
+    text = filter_keyterms("transcripts/transcript10/ToolsandTechniques.txt")
+    text_corpus = open("transcripts/transcript10/ToolsandTechniques.txt").read()
+    G = construct_knowledge_graph_parallel(text, doc_text=text_corpus)
+    nx.write_graphml(G, "ToolsAndTechniques.graphml")
+    keyphraseExtraction("transcripts/transcript10/ToolsandTechniques","ToolsAndTechniques")
+
+
+
+# Hyper_parameters:
+
+# Filter_keyterms(): amount of times word has to appear
+
+# Cluster_keyterms(): Word2vec parameters
+
+# Process_keyterm(KG_size): how many nodes a keyterm can be linked to
+
+# construct_knowledge_graph_parallel(): the size of the description for the keyterm nodes
+
+# build_h_hop(h,threshold)
+
+# compute_semantic_relatedness(): Doc2vec parameters
+
+# build_keyterm_graph(window_size)
+
+# personalized_page_rank(damping_factor=0.85, max_iter=100, tol=1e-6)
+
+# extract_keyphrases(k)
+
+
+
+
+# The only steps where the time complexity plays a big role are steps 4 and 5
 
 # There are several potential optimizations that can be made to improve the speed of the algorithm:
 
-# 1. Use a more efficient keyword extraction algorithm: The current implementation uses a brute-force approach to extract candidate phrases, which can be slow for large amounts of text. There are more efficient algorithms, such as RAKE (Rapid Automatic Keyword Extraction), that can be used to speed up this step.
+# 1. Keyword extraction using RAKE or more optimized algorithms (This wasn't done in the paper)
 
-# 2. Use a more efficient graph representation: The current implementation uses a NetworkX graph to represent the knowledge graph, which can be slow for large graphs. One alternative is to use a graph database, such as Neo4j, which is optimized for storing and querying large graphs.
+# 2. Using Neo4J for larger graphs
 
-# 3. Use caching to avoid redundant computations: The current implementation recalculates the TF-IDF scores and candidate mappings every time the algorithm is run. By using caching to store these results, the algorithm can avoid redundant computations and run faster.
+# 3. Use caching to avoid redundant computations
 
-# 4. Parallelize the algorithm: The current implementation is single-threaded and does not take advantage of multi-core CPUs. By parallelizing the algorithm, it can be run faster on machines with multiple cores.
+# 4. Parallelize more of the algorithm
 
-# 5. Use a more efficient Wikipedia API client: The current implementation uses the `wikipediaapi` library to query Wikipedia for entity descriptions. There are other Wikipedia API clients, such as `wikipedia` and `mwclient`, that may be faster and more efficient.
+# 5. More effecient porgramming language
 
-# 6. More effecient porgramming language
+# 6. Faster internt for wikiepedia queries 
 
-# 7. Get Ethernet, Use HPC and free up RAM on computer, potentially use VMware
+# 7. High Peformance Computing could potentially be used
 
 # 8. Allcating more resources in python
 
-# Only need to combine KGs if they are very simialr as the main issue with this study is the KGs are not big enough
-
-# 9. DBpedia was too slow and also need too specific of a query, but worth looking into for the more enhanced results, perhaps the way they construct in the paper is with a lot less nodes like my original KG so need to look into thi 
-# These are just a few potential optimizations that can be made to speed up the algorithm. Depending on the specific use case and constraints, there may be other optimizations that are more appropriate.
+# 9. Queries were made to wikipedia instead of DBpedia as it was a lot faster but DBpedia may provide better descriptions for the nodes
