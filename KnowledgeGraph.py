@@ -1,25 +1,32 @@
 import string
 import nltk
 from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer
-from nltk.tokenize import word_tokenize
-from collections import defaultdict
+from nltk import word_tokenize, pos_tag, sent_tokenize, WordNetLemmatizer
+from collections import defaultdict, Counter
+import collections
 import networkx as nx
 import matplotlib.pyplot as plt
 import mwclient
 import re
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import AffinityPropagation
 from sklearn.exceptions import ConvergenceWarning
-import warnings
-import multiprocessing
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+import warnings
+import multiprocessing
 import numpy as np
+from multiprocessing import Pool
+import time
+import spacy
+from gensim.models import Word2Vec
+from gensim.models import Doc2Vec
+from gensim.models.doc2vec import TaggedDocument
+
 
 warnings.filterwarnings("ignore", category=ConvergenceWarning)
 
 # Step 1: Preprocess data
+
 stop_words = set(stopwords.words('english'))
 lemmatizer = WordNetLemmatizer()
 
@@ -37,6 +44,9 @@ def preprocess(text):
     lemmatizer = WordNetLemmatizer()
     lemmatized_tokens = [lemmatizer.lemmatize(token) for token in filtered_tokens]
     return lemmatized_tokens
+
+
+# Step 2: Select Keyterms
 
 def extract_keyterms(tokens):
     tagged_tokens = nltk.pos_tag(tokens)
@@ -59,12 +69,62 @@ def filter_keyterms(text):
     return filtered_keyterms
 
 
-# Step 4: Construct knowledge graph
+# Step 3: Keyterm Clustering
 
-# not all the mapping are stored
-# not all the keyterms are nodes with probs
-# Whether this is good or not i do not know might be better to represent as previous form, 
-import time
+def compute_semantic( model, term1, term2):
+    # Compute cosine similarity between the vector representations of term1 and term2
+    
+    try:
+        similarity = model.wv.similarity(term1, term2)
+        
+        return similarity
+    except:
+        return 0.0
+
+def cluster_keyterms(keyterms,input_doc):
+    # Train Word2Vec model on the keyphrases
+    doc = nlp(input_doc)
+    sentences = []
+    for sent in doc.sents:
+        words = []
+        for token in sent:
+            if token.is_stop or not token.is_alpha:
+                continue
+            words.append(token.text)
+        sentences.append(words)
+
+    # Train a Word2Vec model on the sentences
+    model = Word2Vec(sentences, vector_size=300, window=5, min_count=1, workers=4)
+    # print(model.wv.key_to_index)
+    # Compute semantic relatedness between all pairs of keyphrases
+    n = len(keyterms)
+    similarities = np.zeros((n, n))
+    for i in range(n):
+        for j in range(i+1, n):
+            similarities[i][j] = compute_semantic(model, keyterms[i], keyterms[j])
+            similarities[j][i] = similarities[i][j]
+    
+    # Cluster keyphrases using affinity propagation
+    clustering = AffinityPropagation().fit(similarities)
+    labels = clustering.labels_
+    clusters = {}
+    for i, label in enumerate(labels):
+        if label not in clusters:
+            clusters[label] = []
+        clusters[label].append(keyterms[i])
+    clusters = dict(collections.OrderedDict(sorted(clusters.items())))
+    return clusters
+
+#Function below can just be but in main
+def clusters(text_corpus):
+    keyterms = filter_keyterms(text_corpus)
+    text = open(text_corpus).read()
+    clusters = cluster_keyterms(keyterms,text)
+    return clusters
+
+
+
+# Step 4: Keyterm Linking (Construct knowledge graph)
 
 def process_keyterm(kt, mapping_dict):
     site = mwclient.Site('en.wikipedia.org')
@@ -162,7 +222,6 @@ def process_keyterm(kt, mapping_dict):
     return mapping_dict
 
 
-
 def construct_knowledge_graph_parallel(keyterms, num_processes=None, G=None, doc_text=None):
     if not G:
         G = nx.Graph()
@@ -242,10 +301,6 @@ def construct_knowledge_graph_parallel(keyterms, num_processes=None, G=None, doc
     return G
 
 
-
-
-
-
 def extract_summary(text):
     expr = re.compile("(?:^|}})([^{{\}}]+)(?:\{{|$)")
     content =  "".join(expr.findall(text)[0:])
@@ -254,61 +309,7 @@ def extract_summary(text):
 
 
 
-
 # So the total time complexity of this part of the function is O(N^2*K). K is the number of keyterms, N is the number of unique entities found across all the keyterms
-
-
-    
-
-
-import collections
-
-
-
-def compute_semantic( model, term1, term2):
-    # Compute cosine similarity between the vector representations of term1 and term2
-    
-    try:
-        similarity = model.wv.similarity(term1, term2)
-        
-        return similarity
-    except:
-        return 0.0
-
-def cluster_keyterms(keyterms,input_doc):
-    # Train Word2Vec model on the keyphrases
-    doc = nlp(input_doc)
-    sentences = []
-    for sent in doc.sents:
-        words = []
-        for token in sent:
-            if token.is_stop or not token.is_alpha:
-                continue
-            words.append(token.text)
-        sentences.append(words)
-
-    # Train a Word2Vec model on the sentences
-    model = Word2Vec(sentences, vector_size=300, window=5, min_count=1, workers=4)
-    # print(model.wv.key_to_index)
-    # Compute semantic relatedness between all pairs of keyphrases
-    n = len(keyterms)
-    similarities = np.zeros((n, n))
-    for i in range(n):
-        for j in range(i+1, n):
-            similarities[i][j] = compute_semantic(model, keyterms[i], keyterms[j])
-            similarities[j][i] = similarities[i][j]
-    
-    # Cluster keyphrases using affinity propagation
-    clustering = AffinityPropagation().fit(similarities)
-    labels = clustering.labels_
-    clusters = {}
-    for i, label in enumerate(labels):
-        if label not in clusters:
-            clusters[label] = []
-        clusters[label].append(keyterms[i])
-    clusters = dict(collections.OrderedDict(sorted(clusters.items())))
-    return clusters
-
 
 def viewKG(G):
     G = nx.read_graphml("knowledge_graph.graphml")
@@ -323,58 +324,12 @@ def viewKG(G):
     plt.axis('off')
     plt.show()
 
-    
-
-# if __name__ == '__main__':
-#     multiprocessing.freeze_support()
-#     text = filter_keyterms("transcripts/transcript1/cosmosdb.txt")
-#     print(text)
-#     text_corpus = open("transcripts/transcript1/cosmosdb.txt").read()
-#     G = construct_knowledge_graph_parallel(text,doc_text=text_corpus)
-# #     # text = filter_phrases("transcripts/transcript2/From Python Script to Python app.txt")
-# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-# #     # text = filter_phrases("transcripts/transcript3/Course Work 1 - Part 2.txt")
-# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-# #     # text = filter_phrases("transcripts/transcript4/Data in the Cloud.txt")
-# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-# #     # text = filter_phrases("transcripts/transcript5/iaac.txt")
-# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-# #     # text = filter_phrases("transcripts/transcript6/Starting-PHP.txt")
-# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-# #     # text = filter_phrases("transcripts/transcript7/WithSecure.txt")
-# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-# #     # text = filter_phrases("transcripts/transcript8/Vulnerability-Fixing.txt")
-# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-# #     # text = filter_phrases("transcripts/transcript9/robpress.txt")
-# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-# #     # text = filter_phrases("transcripts/transcript10/ToolsandTechniques.txt")
-# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-#     nx.write_graphml(G, "knowledge_graph.graphml")
 
 
+# Step 5: Keyterm Graph Construction (Building of H-hop graph)
 
 
-
-
-
-# Knowledge graph is constructed from all transcripts and then saved as graphml
-def clusters(text_corpus):
-    keyterms = filter_keyterms(text_corpus)
-    text = open(text_corpus).read()
-    clusters = cluster_keyterms(keyterms,text)
-    # print(dict(collections.OrderedDict(sorted(clusters.items()))))
-    return clusters
-
-
-
-# Run functions from here
-
-# Define function to construct h-hop keyterm graph
-
-from multiprocessing import Pool
-import networkx as nx
-from gensim.models import Word2Vec
-
+#This initiates 
 def build_h_hop(cluster, kg, h, threshold,input_doc):
     # Initialize the keyterm graph
     keyterm_graph = nx.Graph()
@@ -423,10 +378,6 @@ def build_h_hop(cluster, kg, h, threshold,input_doc):
     keyterm_graph.add_edges_from(combined.edges())
 
     return keyterm_graph
-import spacy
-from gensim.models import Doc2Vec
-from gensim.models.doc2vec import TaggedDocument
-
 
 nlp = spacy.load('en_core_web_sm')
 def compute_semantic_relatedness(anchor_nodes, expanded_nodes, input_doc):
@@ -465,7 +416,6 @@ def compute_semantic_relatedness(anchor_nodes, expanded_nodes, input_doc):
     return sum(similarities) / len(similarities)
 
 
-
 def build_keyterm_graph(cluster, window_size, input_doc):
     """
     Build a keyterm graph for a cluster of terms.
@@ -499,7 +449,7 @@ def build_keyterm_graph(cluster, window_size, input_doc):
 
 def combine_keyterm_graphs(keyterm_graphs):
 
-    # Combine keyterm graphs together
+    # Combine keyterm graphs together, generated for each cluster
 
     combined_graph = nx.Graph()
     for graph in keyterm_graphs:
@@ -508,10 +458,9 @@ def combine_keyterm_graphs(keyterm_graphs):
     return combined_graph
 
 
-
-
 def cosine_similarity(u, v):
     return u.dot(v) / (np.linalg.norm(u) * np.linalg.norm(v))
+
 
 def are_in_same_window(keyterm1, keyterm2, input_doc, window_size):
     
@@ -530,21 +479,7 @@ def are_in_same_window(keyterm1, keyterm2, input_doc, window_size):
 
 
 
-
-
-# if __name__ == '__main__':
-#     multiprocessing.freeze_support()
-#     cluster = clusters("transcripts/transcript1/cosmosdb.txt")
-#     print(cluster)
-#     input_doc = open("transcripts/transcript1/cosmosdb.txt").read()
-#     KG = nx.read_graphml("knowledge_graph.graphml")
-#     h_hop = build_h_hop(cluster, KG,2,0.5, input_doc)
-#     nx.write_graphml(h_hop,"h_hop.graphml")
-from collections import Counter
-
-
-import networkx as nx
-import numpy as np
+# Step 6: Keyterm Ranking (Personalized page rank)
 
 def personalized_page_rank(h_hop_graph, keyterms, damping_factor=0.85, max_iter=100, tol=1e-6):
     """
@@ -603,9 +538,7 @@ def personalized_page_rank(h_hop_graph, keyterms, damping_factor=0.85, max_iter=
 
 
 
-
-
-from nltk import word_tokenize, pos_tag, sent_tokenize
+# Step 7: keyphrase generation
 
 def extract_keyphrases(ppr_scores, input_document, k):
     # Generate candidate phrases
@@ -655,6 +588,49 @@ def extract_keyphrases(ppr_scores, input_document, k):
 
 
 
+# Step 9: Pipeline
+
+# if __name__ == '__main__':
+#     multiprocessing.freeze_support()
+#     text = filter_keyterms("transcripts/transcript1/cosmosdb.txt")
+#     print(text)
+#     text_corpus = open("transcripts/transcript1/cosmosdb.txt").read()
+#     G = construct_knowledge_graph_parallel(text,doc_text=text_corpus)
+# #     # text = filter_phrases("transcripts/transcript2/From Python Script to Python app.txt")
+# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
+# #     # text = filter_phrases("transcripts/transcript3/Course Work 1 - Part 2.txt")
+# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
+# #     # text = filter_phrases("transcripts/transcript4/Data in the Cloud.txt")
+# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
+# #     # text = filter_phrases("transcripts/transcript5/iaac.txt")
+# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
+# #     # text = filter_phrases("transcripts/transcript6/Starting-PHP.txt")
+# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
+# #     # text = filter_phrases("transcripts/transcript7/WithSecure.txt")
+# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
+# #     # text = filter_phrases("transcripts/transcript8/Vulnerability-Fixing.txt")
+# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
+# #     # text = filter_phrases("transcripts/transcript9/robpress.txt")
+# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
+# #     # text = filter_phrases("transcripts/transcript10/ToolsandTechniques.txt")
+# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
+#     nx.write_graphml(G, "knowledge_graph.graphml")
+
+
+
+
+
+
+# if __name__ == '__main__':
+#     multiprocessing.freeze_support()
+#     cluster = clusters("transcripts/transcript1/cosmosdb.txt")
+#     print(cluster)
+#     input_doc = open("transcripts/transcript1/cosmosdb.txt").read()
+#     KG = nx.read_graphml("knowledge_graph.graphml")
+#     h_hop = build_h_hop(cluster, KG,2,0.5, input_doc)
+#     nx.write_graphml(h_hop,"h_hop.graphml")
+
+
 if __name__ == '__main__':
     h_hop = nx.read_graphml("h_hop.graphml")
     input_doc = open("transcripts/transcript1/cosmosdb.txt").read()
@@ -678,6 +654,12 @@ if __name__ == '__main__':
     text = text.translate(str.maketrans('', '', string.punctuation))
 
     print(extract_keyphrases(ppr_scores,text,10))
+
+
+
+
+
+
 
 #Add parralization and fix the big KG example 
 # I have to construct knowledge graph in the paper they just use dbpedia
