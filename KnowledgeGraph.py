@@ -260,20 +260,54 @@ def extract_summary(text):
 
     
 
-def cluster_keyphrases(keyphrases):
-    # Convert keyphrases to tf-idf vectors
-    vectorizer = TfidfVectorizer()
-    X = vectorizer.fit_transform(keyphrases)
+
+import collections
+
+
+
+def compute_semantic( model, term1, term2):
+    # Compute cosine similarity between the vector representations of term1 and term2
+    
+    try:
+        similarity = model.wv.similarity(term1, term2)
+        
+        return similarity
+    except:
+        return 0.0
+
+def cluster_keyterms(keyterms,input_doc):
+    # Train Word2Vec model on the keyphrases
+    doc = nlp(input_doc)
+    sentences = []
+    for sent in doc.sents:
+        words = []
+        for token in sent:
+            if token.is_stop or not token.is_alpha:
+                continue
+            words.append(token.text)
+        sentences.append(words)
+
+    # Train a Word2Vec model on the sentences
+    model = Word2Vec(sentences, vector_size=300, window=5, min_count=1, workers=4)
+    # print(model.wv.key_to_index)
+    # Compute semantic relatedness between all pairs of keyphrases
+    n = len(keyterms)
+    similarities = np.zeros((n, n))
+    for i in range(n):
+        for j in range(i+1, n):
+            similarities[i][j] = compute_semantic(model, keyterms[i], keyterms[j])
+            similarities[j][i] = similarities[i][j]
+    
     # Cluster keyphrases using affinity propagation
-    clustering = AffinityPropagation(damping=0.9, max_iter=1000).fit(X)
+    clustering = AffinityPropagation().fit(similarities)
     labels = clustering.labels_
     clusters = {}
     for i, label in enumerate(labels):
         if label not in clusters:
             clusters[label] = []
-        clusters[label].append(keyphrases[i])
+        clusters[label].append(keyterms[i])
+    clusters = dict(collections.OrderedDict(sorted(clusters.items())))
     return clusters
-
 
 
 def viewKG(G):
@@ -291,31 +325,31 @@ def viewKG(G):
 
     
 
-if __name__ == '__main__':
-    multiprocessing.freeze_support()
-    text = filter_keyterms("transcripts/transcript1/cosmosdb.txt")
-    print(text)
-    text_corpus = open("transcripts/transcript1/cosmosdb.txt").read()
-    G = construct_knowledge_graph_parallel(text,doc_text=text_corpus)
-#     # text = filter_phrases("transcripts/transcript2/From Python Script to Python app.txt")
-#     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-#     # text = filter_phrases("transcripts/transcript3/Course Work 1 - Part 2.txt")
-#     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-#     # text = filter_phrases("transcripts/transcript4/Data in the Cloud.txt")
-#     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-#     # text = filter_phrases("transcripts/transcript5/iaac.txt")
-#     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-#     # text = filter_phrases("transcripts/transcript6/Starting-PHP.txt")
-#     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-#     # text = filter_phrases("transcripts/transcript7/WithSecure.txt")
-#     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-#     # text = filter_phrases("transcripts/transcript8/Vulnerability-Fixing.txt")
-#     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-#     # text = filter_phrases("transcripts/transcript9/robpress.txt")
-#     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-#     # text = filter_phrases("transcripts/transcript10/ToolsandTechniques.txt")
-#     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
-    nx.write_graphml(G, "knowledge_graph.graphml")
+# if __name__ == '__main__':
+#     multiprocessing.freeze_support()
+#     text = filter_keyterms("transcripts/transcript1/cosmosdb.txt")
+#     print(text)
+#     text_corpus = open("transcripts/transcript1/cosmosdb.txt").read()
+#     G = construct_knowledge_graph_parallel(text,doc_text=text_corpus)
+# #     # text = filter_phrases("transcripts/transcript2/From Python Script to Python app.txt")
+# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
+# #     # text = filter_phrases("transcripts/transcript3/Course Work 1 - Part 2.txt")
+# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
+# #     # text = filter_phrases("transcripts/transcript4/Data in the Cloud.txt")
+# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
+# #     # text = filter_phrases("transcripts/transcript5/iaac.txt")
+# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
+# #     # text = filter_phrases("transcripts/transcript6/Starting-PHP.txt")
+# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
+# #     # text = filter_phrases("transcripts/transcript7/WithSecure.txt")
+# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
+# #     # text = filter_phrases("transcripts/transcript8/Vulnerability-Fixing.txt")
+# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
+# #     # text = filter_phrases("transcripts/transcript9/robpress.txt")
+# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
+# #     # text = filter_phrases("transcripts/transcript10/ToolsandTechniques.txt")
+# #     # G = construct_knowledge_graph_parallel(text,G=G, doc_text=text_corpus)
+#     nx.write_graphml(G, "knowledge_graph.graphml")
 
 
 
@@ -324,12 +358,13 @@ if __name__ == '__main__':
 
 
 # Knowledge graph is constructed from all transcripts and then saved as graphml
-
 def clusters(text_corpus):
-    keyphrases = filter_phrases(text_corpus)
-    clusters = cluster_keyphrases(keyphrases)
+    keyterms = filter_keyterms(text_corpus)
+    text = open(text_corpus).read()
+    clusters = cluster_keyterms(keyterms,text)
     # print(dict(collections.OrderedDict(sorted(clusters.items()))))
     return clusters
+
 
 
 # Run functions from here
@@ -350,10 +385,15 @@ def build_h_hop(cluster, kg, h, threshold,input_doc):
     
     # Add anchor nodes to the keyterm graph
     anchor_nodes = [node for node in kg.nodes() if node in clusterKT]
-    keyterm_graph.add_nodes_from(anchor_nodes)
     
+    keyterm_graph.add_nodes_from(anchor_nodes)
+    count1 = 0
     # Apply Breadth-first search to extract paths of length no longer than h
     for anchor_node in anchor_nodes:
+        print(keyterm_graph.edges())
+        count1 = count1 + 1
+
+        print(anchor_node + " : " + str(count1) + " : " + str(len(anchor_nodes)))
         bfs_paths = nx.bfs_tree(kg, anchor_node, depth_limit=h).edges()
         print(len(bfs_paths))
         count = 0
@@ -367,24 +407,21 @@ def build_h_hop(cluster, kg, h, threshold,input_doc):
         for i, path in enumerate(bfs_paths):
             count = count + 1
             print("path" + " : " + str(count) )
-            
-            if semantic_relatedness[i] < threshold: #This value needs to be changed
+            print(path)
+            if semantic_relatedness[i] > threshold: #This value needs to be changed
                 continue
             
             print("continue")
-            # Add the path to the keyterm graph
             keyterm_graph.add_edges_from([path])
 
     # Add edges between anchor nodes that occur in the same window
-    for node1, node2 in keyterm_graph.edges():
-        if node1 == node2:
-            continue
-        print("nodes")
-        keyterm1 = cluster[node1]
-        keyterm2 = cluster[node2]
-        if are_in_same_window(keyterm1, keyterm2,input_doc,5):
-            keyterm_graph.add_edge(node1, node2)
-    
+    keyterm_graphs = []
+    for clust in cluster.values():
+        keyterm_grapht = build_keyterm_graph(clust, 5, input_doc)
+        keyterm_graphs.append(keyterm_grapht)
+    combined = combine_keyterm_graphs(keyterm_graphs)
+    keyterm_graph.add_edges_from(combined.edges())
+
     return keyterm_graph
 import spacy
 from gensim.models import Doc2Vec
@@ -408,7 +445,7 @@ def compute_semantic_relatedness(anchor_nodes, expanded_nodes, input_doc):
     
     # Train a Doc2Vec model on the tagged documents
     model = Doc2Vec(tagged_docs, vector_size=300, window=3, min_count=1, epochs=50)
-    
+
     # Find the vectors for the anchor nodes and expanded nodes
     anchor_vectors = []
     for node in anchor_nodes:
@@ -419,7 +456,6 @@ def compute_semantic_relatedness(anchor_nodes, expanded_nodes, input_doc):
     for node in expanded_nodes:
         vector = model.infer_vector(node.split())
         expanded_vectors.append(vector)
-    
     # Compute the cosine similarity between the anchor and expanded vectors
     similarities = []
     for anchor_vector in anchor_vectors:
@@ -430,6 +466,46 @@ def compute_semantic_relatedness(anchor_nodes, expanded_nodes, input_doc):
 
 
 
+def build_keyterm_graph(cluster, window_size, input_doc):
+    """
+    Build a keyterm graph for a cluster of terms.
+    
+    Args:
+    - cluster (dict): a dictionary where the keys are the anchor nodes in the cluster and the values are the corresponding keyterms
+    - kg (nx.Graph): the knowledge graph
+    - window_size (int): the maximum number of words between two keyterms for an edge to be added
+    - input_doc (str): the input document as a string
+    
+    Returns:
+    - keyterm_graph (nx.Graph): the keyterm graph for the cluster
+    """
+    # Initialize the keyterm graph
+    keyterm_graph = nx.Graph()
+    
+    # Add anchor nodes to the keyterm graph
+    anchor_nodes = cluster
+    keyterm_graph.add_nodes_from(anchor_nodes)
+    
+    # Add edges between anchor nodes based on window size
+    for i, node1 in enumerate(anchor_nodes):
+        for j in range(i+1, len(anchor_nodes)):
+            keyterm1 = cluster[i]
+            keyterm2 = cluster[j]
+            if are_in_same_window(keyterm1, keyterm2, input_doc, window_size):
+                keyterm_graph.add_edge(keyterm1, keyterm2)
+    
+    return keyterm_graph
+
+
+def combine_keyterm_graphs(keyterm_graphs):
+
+    # Combine keyterm graphs together
+
+    combined_graph = nx.Graph()
+    for graph in keyterm_graphs:
+        combined_graph.add_edges_from(graph.edges())
+    
+    return combined_graph
 
 
 
@@ -437,33 +513,18 @@ def compute_semantic_relatedness(anchor_nodes, expanded_nodes, input_doc):
 def cosine_similarity(u, v):
     return u.dot(v) / (np.linalg.norm(u) * np.linalg.norm(v))
 
-def are_in_same_window(keyterm_i, keyterm_j, input_document, window_size):
-    """
-    Check if keyterm_i and keyterm_j appear in the same window in the input document.
-
-    Args:
-    keyterm_i (str): First keyterm
-    keyterm_j (str): Second keyterm
-    input_document (str): Input document
-    window_size (int): Window size
-
-    Returns:
-    bool: True if keyterm_i and keyterm_j appear in the same window in the input document, False otherwise
-    """
-    # Find the index of the first occurrence of keyterm_i in the input document
-    idx_i = input_document.find(keyterm_i)
-    if idx_i == -1:
-        return False
-
-    # Find the index of the first occurrence of keyterm_j in the input document
-    idx_j = input_document.find(keyterm_j)
-    if idx_j == -1:
-        return False
-
-    # Check if the two keyterms appear within the same window
-    if abs(idx_i - idx_j) <= window_size:
-        return True
-
+def are_in_same_window(keyterm1, keyterm2, input_doc, window_size):
+    
+    # Find the indices of the keyterms in the input document
+    indices1 = [i for i, x in enumerate(input_doc.split()) if x == keyterm1]
+    indices2 = [i for i, x in enumerate(input_doc.split()) if x == keyterm2]
+    
+    # Check if any of the indices is within the window of the other
+    for index1 in indices1:
+        for index2 in indices2:
+            if abs(index1 - index2) <= window_size:
+                return True
+    
     return False
 
 
@@ -474,54 +535,57 @@ def are_in_same_window(keyterm_i, keyterm_j, input_document, window_size):
 # if __name__ == '__main__':
 #     multiprocessing.freeze_support()
 #     cluster = clusters("transcripts/transcript1/cosmosdb.txt")
+#     print(cluster)
 #     input_doc = open("transcripts/transcript1/cosmosdb.txt").read()
-#     KG = nx.read_graphml("knowledge_graph1.graphml")
+#     KG = nx.read_graphml("knowledge_graph.graphml")
 #     h_hop = build_h_hop(cluster, KG,2,0.5, input_doc)
-#     for node, attrs in h_hop.nodes(data=True):
-#         print(node, attrs)
+#     nx.write_graphml(h_hop,"h_hop.graphml")
+from collections import Counter
 
 
 import networkx as nx
+import numpy as np
 
-def personalized_page_rank(graph, keyterms, damping_factor=0.85, max_iter=100, tol=1e-6):
+def personalized_page_rank(h_hop_graph, keyterms, damping_factor=0.85, max_iter=100, tol=1e-6):
     """
     Computes the personalized page rank for each node in the graph based on the given keyterms and their frequencies.
-    
+
     Parameters:
-        graph (dict): A dictionary representing the graph as an adjacency list.
+        h_hop_graph (nx.Graph): A networkx graph representing the h-hop graph.
         keyterms (dict): A dictionary mapping node ids to their corresponding term frequencies.
         damping_factor (float): The damping factor, usually set to 0.85.
         max_iter (int): The maximum number of iterations.
         tol (float): The tolerance for convergence.
-    
+
     Returns:
         dict: A dictionary mapping node ids to their corresponding personalized page rank scores.
     """
     # Create a mapping from node ids to their indices in the adjacency matrix.
-    node_ids = list(graph.keys())
+    node_ids = list(h_hop_graph.nodes())
     node_indices = {node_id: i for i, node_id in enumerate(node_ids)}
 
     # Compute the jump probabilities based on the given keyterms.
     num_nodes = len(node_ids)
     jump_probs = np.zeros(num_nodes)
     for node_id, term_freq in keyterms.items():
-        jump_probs[node_indices[node_id]] = term_freq / sum(keyterms.values())
+        if node_id in node_indices:
+            jump_probs[node_indices[node_id]] = term_freq / sum(keyterms.values())
 
     # Compute the weight for each predicate based on its inverse document frequency.
     edge_counts = {}
-    for neighbors in graph.values():
-        for neighbor in neighbors:
-            edge_counts[neighbor] = edge_counts.get(neighbor, 0) + 1
+    for node1, node2 in h_hop_graph.edges():
+        edge_counts[node2] = edge_counts.get(node2, 0) + 1
     num_edges = sum(edge_counts.values())
-    pred_weights = {pred: np.log(num_edges / count) for pred, count in edge_counts.items()}
+    pred_weights = {node2: np.log(num_edges / count) for node2, count in edge_counts.items()}
 
     # Initialize the transition matrix based on the weighted graph.
     trans_matrix = np.zeros((num_nodes, num_nodes))
     for i, node_id in enumerate(node_ids):
-        out_degree = len(graph[node_id])
-        for neighbor in graph[node_id]:
-            j = node_indices[neighbor]
-            trans_matrix[j, i] = pred_weights.get((node_id, neighbor), 0) / out_degree
+        out_degree = len(h_hop_graph[node_id])
+        for neighbor in h_hop_graph[node_id]:
+            if neighbor in node_indices:
+                j = node_indices[neighbor]
+                trans_matrix[j, i] = pred_weights.get(neighbor, 0) / out_degree
 
     # Initialize the page rank scores.
     page_rank = np.ones(num_nodes) / num_nodes
@@ -538,71 +602,83 @@ def personalized_page_rank(graph, keyterms, damping_factor=0.85, max_iter=100, t
     return {node_id: score for node_id, score in zip(node_ids, page_rank)}
 
 
-def extract_candidate_phrases(processed):
+
+
+
+from nltk import word_tokenize, pos_tag, sent_tokenize
+
+def extract_keyphrases(ppr_scores, input_document, k):
+    # Generate candidate phrases
+    sentences = sent_tokenize(input_document)
+    print(" ".join(sentences).strip("\n\n"))
+    # Tokenize the words and tag their parts of speech
+    document = []
+    for sentence in sentences:
+        tagged = pos_tag(word_tokenize(sentence))
+        # print(document)
+        document.append(tagged)
     
-    # Extract noun phrases using part-of-speech tagging
-    grammar = r"""
-        NP: {<DT|PP\$>?<JJ>*<NN>+}
-            {<NNP>+}
-            """
-    cp = nltk.RegexpParser(grammar)
-    tagged_tokens = nltk.pos_tag(processed)
-    tree = cp.parse(tagged_tokens)
-    
-    # Get candidate phrases from the parse tree
-    candidate_phrases = []
-    for subtree in tree.subtrees():
-        if subtree.label() == 'NP':
-            candidate_phrases.append(' '.join([word for word, tag in subtree.leaves()]))
-    
-    return candidate_phrases
-
-def filter_phrases(phrases):
-    # Filter phrases that occur more than once and have at least two words
-    phrase_freq = defaultdict(int)
-    for phrase in phrases:
-        phrase_freq[phrase] += 1
-    filtered_phrases = [phrase for phrase in phrases if phrase_freq[phrase] > 1 and len(phrase.split()) > 1]
-    return filtered_phrases
-
-#The value of K is determined empirically by evaluating the performance of the keyphrase extraction algorithm on a development set. Perhaps change this so it can have multiple words aswell
-def extract_keyphrases(h_hop_graph, keyterms, k): # this doesn't take in the input document this needs to change
-    # Create a subgraph containing only the keyterm nodes
-    keyterm_nodes = [node for node in h_hop_graph.nodes() if node in keyterms]
-    keyterm_subgraph = h_hop_graph.subgraph(keyterm_nodes)
-
-    # Calculate the Personalized PageRank score for each node in the subgraph
-    ppr_scores = nx.pagerank(keyterm_subgraph)
-
-    # Create a list of candidate phrases
     candidates = []
-    for node in h_hop_graph.nodes():
-        if node in keyterms:
-            continue
-        if h_hop_graph.nodes[node]['pos'] not in ['NN', 'NNS', 'NNP', 'NNPS']:
-            continue
-        if len(list(h_hop_graph.neighbors(node))) == 0:
-            continue
-        candidate = []
-        for neighbor in h_hop_graph.neighbors(node):
-            if h_hop_graph.nodes[neighbor]['pos'] in ['NN', 'NNS', 'NNP', 'NNPS']:
-                candidate.append(neighbor)
-            else:
-                break
-        if len(candidate) > 0:
-            candidates.append(tuple(candidate))
+    for sentence in document:
+        # print(sentence)
+        for i, (word, pos) in enumerate(sentence):
+            # print(word)
+            if pos in ['NN', 'NNS', 'NNP', 'NNPS']:
+                candidate = [word]
+                for j in range(i+1, len(sentence)):
+                    next_word, next_pos = sentence[j]
+                    if next_pos in ['JJ', 'CD']:
+                        candidate.append(next_word)
+                    elif next_pos in ['NN', 'NNS', 'NNP', 'NNPS']:
+                        candidate.append(next_word)
+                    else:
+                        break
+                if len(candidate) > 1:
+                    candidates.append(tuple(candidate))
 
-    # Calculate the PPR score for each candidate phrase
+    # Calculate the score for each candidate phrase
     phrase_scores = {}
+    keyterms = set(ppr_scores.keys())
     for phrase in candidates:
+        print("Phrase: " + str(phrase))
         score = sum([ppr_scores[keyterm] for keyterm in keyterms if keyterm in phrase])
-        frequency = sum([1 for node in h_hop_graph.nodes() if h_hop_graph.nodes[node]['lemma'] == ' '.join(phrase)])
-        first_occurrence = min([h_hop_graph.nodes[node]['position'] for node in h_hop_graph.nodes() if h_hop_graph.nodes[node]['lemma'] == ' '.join(phrase)])
-        phrase_scores[phrase] = frequency * first_occurrence * score
-
+        print("Score: " + str(score))
+        frequency = sum([1 for sentence in document for word, _ in sentence if word == phrase[0]])
+        print("Frequency: " + str(frequency))
+        first_occurrence = " ".join(" ".join(sentences).split()).index(" ".join(phrase))
+        print("First occurences: " + str(first_occurrence))
+        if first_occurrence:
+            phrase_scores[phrase] = (frequency / first_occurrence )* score
     # Select the top-K phrases with the largest scores as the keyphrases
     keyphrases = sorted(phrase_scores.items(), key=lambda x: x[1], reverse=True)[:k]
     return [keyphrase[0] for keyphrase in keyphrases]
+
+
+
+if __name__ == '__main__':
+    h_hop = nx.read_graphml("h_hop.graphml")
+    input_doc = open("transcripts/transcript1/cosmosdb.txt").read()
+    words = nltk.word_tokenize(input_doc)
+
+    # Remove stop words and stem the remaining words.
+    stopwords = set(nltk.corpus.stopwords.words("english"))
+    terms = [word.lower() for word in words if word.lower() not in stopwords]
+
+    # Count the frequency of each term.
+    term_freqs = Counter(terms)
+
+    # Construct the keyterms dictionary mapping node ids to their corresponding term frequencies.
+    keyterms = {term: freq for term, freq in term_freqs.items()}
+    ppr_scores = personalized_page_rank(h_hop,keyterms)
+    
+
+# Tokenize the words and tag their parts of speech
+    text = input_doc.lower()
+    # Remove punctuation
+    text = text.translate(str.maketrans('', '', string.punctuation))
+
+    print(extract_keyphrases(ppr_scores,text,10))
+
 #Add parralization and fix the big KG example 
 # I have to construct knowledge graph in the paper they just use dbpedia
 # Need to make sure my keywords are being chosen correct at the start as I don't know if the paper has multiple keywords, have to use doc2vec instead because of this
