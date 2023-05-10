@@ -693,7 +693,7 @@ if __name__ == '__main__':
     text_corpus = open("transcripts/transcript10/ToolsandTechniques.txt").read()
     G = construct_knowledge_graph_parallel(text, doc_text=text_corpus)
     nx.write_graphml(G, "ToolsAndTechniques.graphml")
-    keyphraseExtraction("transcripts/transcript10/ToolsandTechniques","ToolsAndTechniques")
+    keyphraseExtraction("transcripts/transcript10/ToolsandTechniques.txt","ToolsAndTechniques")
 
 
 
