@@ -486,7 +486,7 @@ def are_in_same_window(keyterm1, keyterm2, input_doc, window_size):
     return False
 
 # The time complexity of this step is : O(N * (|E| * |V|)^h), where N is the number of anchor nodes, |E| is the number of edges in the knowledge graph, |V| is the number of vertices in the knowledge graph, and h is the length of the path.
-
+# But because in this case h is always one the time complexity can be simiplified to O(N * |E| * |V|)
 
 
 # Step 6: Keyterm Ranking (Personalized page rank)
