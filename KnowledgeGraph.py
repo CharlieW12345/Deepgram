@@ -420,7 +420,7 @@ def compute_semantic_relatedness(anchor_nodes, expanded_nodes, input_doc):
     similarities = []
     for anchor_vector in anchor_vectors:
         for expanded_vector in expanded_vectors:
-            similarities.append(cosine_similarity(np.squeeze(anchor_vector), np.squeeze(expanded_vector)))
+            similarities.append(cosine_similarities(np.squeeze(anchor_vector), np.squeeze(expanded_vector)))
     
     return sum(similarities) / len(similarities)
 
@@ -467,7 +467,7 @@ def combine_keyterm_graphs(keyterm_graphs):
     return combined_graph
 
 
-def cosine_similarity(u, v):
+def cosine_similarities(u, v):
     return u.dot(v) / (np.linalg.norm(u) * np.linalg.norm(v))
 
 
